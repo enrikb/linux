@@ -104,6 +104,8 @@ struct mcp2221 {
  * want to set some other frequency (min 50 kHz - max 400 kHz).
  */
 static uint i2c_clk_freq = 400;
+module_param_named(i2c_bus_freq_khz, i2c_clk_freq, uint, 0444);
+MODULE_PARM_DESC(i2c_bus_freq_khz, "Bus clock frequency in kHz (50-400, default: 400).");
 
 /* Synchronously send output report to the device */
 static int mcp_send_report(struct mcp2221 *mcp,
