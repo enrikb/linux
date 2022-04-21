@@ -897,6 +897,9 @@ static int mcp2221_probe(struct hid_device *hdev,
 	mcp->gc->can_sleep = 1;
 	mcp->gc->parent = &hdev->dev;
 
+	/* Enable reception of HID reports during GPIO initialization */
+	hid_device_io_start(hdev);
+
 	ret = devm_gpiochip_add_data(&hdev->dev, mcp->gc, mcp);
 	if (ret)
 		goto err_gc;
