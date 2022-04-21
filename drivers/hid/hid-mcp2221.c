@@ -36,6 +36,8 @@ enum {
 enum {
 	MCP2221_SUCCESS = 0x00,
 	MCP2221_I2C_ENG_BUSY = 0x01,
+	MCP2221_I2C_ENG_CANCEL_IN_PROGRESS = 0x10,
+	MCP2221_I2C_ENG_IDLE = 0x11,
 	MCP2221_I2C_START_TOUT = 0x12,
 	MCP2221_I2C_STOP_TOUT = 0x62,
 	MCP2221_I2C_WRADDRL_TOUT = 0x23,
@@ -164,30 +166,29 @@ static int mcp_chk_last_cmd_status(struct mcp2221 *mcp)
 /* Cancels last command releasing i2c bus just in case occupied */
 static int mcp_cancel_last_cmd(struct mcp2221 *mcp)
 {
+	int ret;
+
 	memset(mcp->txbuf, 0, 8);
 	mcp->txbuf[0] = MCP2221_I2C_PARAM_OR_STATUS;
 	mcp->txbuf[2] = MCP2221_I2C_CANCEL;
 
-	return mcp_send_data_req_status(mcp, mcp->txbuf, 8);
+	ret = mcp_send_data_req_status(mcp, mcp->txbuf, 8);
+	if (ret == -EINPROGRESS) {
+		usleep_range(980, 1000);
+		ret = 0;
+	}
+
+	return ret;
 }
 
 static int mcp_set_i2c_speed(struct mcp2221 *mcp)
 {
-	int ret;
-
 	memset(mcp->txbuf, 0, 8);
 	mcp->txbuf[0] = MCP2221_I2C_PARAM_OR_STATUS;
 	mcp->txbuf[3] = MCP2221_I2C_SET_SPEED;
 	mcp->txbuf[4] = mcp->cur_i2c_clk_div;
 
-	ret = mcp_send_data_req_status(mcp, mcp->txbuf, 8);
-	if (ret) {
-		/* Small delay is needed here */
-		usleep_range(980, 1000);
-		mcp_cancel_last_cmd(mcp);
-	}
-
-	return 0;
+	return mcp_send_data_req_status(mcp, mcp->txbuf, 8);
 }
 
 /*
@@ -312,11 +313,6 @@ static int mcp_i2c_xfer(struct i2c_adapter *adapter,
 
 	mutex_lock(&mcp->lock);
 
-	/* Setting speed before every transaction is required for mcp2221 */
-	ret = mcp_set_i2c_speed(mcp);
-	if (ret)
-		goto exit;
-
 	if (num == 1) {
 		if (msgs->flags & I2C_M_RD) {
 			ret = mcp_i2c_smbus_read(mcp, msgs, MCP2221_I2C_RD_DATA,
@@ -417,10 +413,6 @@ static int mcp_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 	hid_hw_power(mcp->hdev, PM_HINT_FULLON);
 
 	mutex_lock(&mcp->lock);
-
-	ret = mcp_set_i2c_speed(mcp);
-	if (ret)
-		goto exit;
 
 	switch (size) {
 
@@ -739,6 +731,11 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 				mcp->status = -EAGAIN;
 				break;
 			}
+			if ((mcp->txbuf[2] == MCP2221_I2C_CANCEL) &&
+				(data[2] == MCP2221_I2C_ENG_CANCEL_IN_PROGRESS)) {
+				mcp->status = -EINPROGRESS;
+				break;
+			}
 			if (data[20] & MCP2221_I2C_MASK_ADDR_NACK) {
 				mcp->status = -ENXIO;
 				break;
@@ -903,6 +900,13 @@ static int mcp2221_probe(struct hid_device *hdev,
 	ret = devm_gpiochip_add_data(&hdev->dev, mcp->gc, mcp);
 	if (ret)
 		goto err_gc;
+
+	/* Setup I2C clock divider */
+	ret = mcp_set_i2c_speed(mcp);
+	if (ret) {
+		hid_err(hdev, "mcp_set_i2c_speed returned %d\n", ret);
+		goto err_gc;
+	}
 
 	return 0;
 
