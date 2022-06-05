@@ -140,6 +140,35 @@ static int mcp_send_data_req_status(struct mcp2221 *mcp,
 	int ret;
 	unsigned long t;
 
+	if (len >= 1) {
+		switch(out_report[0]) {
+			case MCP2221_I2C_WR_DATA:
+			case MCP2221_I2C_WR_NO_STOP:
+			case MCP2221_I2C_RD_DATA:
+			case MCP2221_I2C_RD_RPT_START:
+				static char print_buf[64];
+				char *q = print_buf;
+				int i;
+				q[0] = '\0';
+				for (i = 4; i < 8 && i < len; i++) {
+					snprintf(q, q - print_buf + sizeof(print_buf), "%02x ", out_report[i]);
+					q += 3;
+				}
+				if (len >= 4)
+					hid_dbg(mcp->hdev, "r/w(%02x) -> addr %02x length %04x %s\n",
+							out_report[0], out_report[3], out_report[1] | out_report[2]<<8, print_buf);
+				break;
+			case MCP2221_I2C_PARAM_OR_STATUS:
+				if (len >= 5)
+					hid_dbg(mcp->hdev, "s/p(%02x) -> cancel %02x setdiv %02x div %02x\n", out_report[0], out_report[2], out_report[3], out_report[4]);
+				break;
+			case MCP2221_I2C_GET_DATA:
+					hid_dbg(mcp->hdev, "get(%02x) ->\n", out_report[0]);
+				break;
+			default:
+				break;
+		}
+	}
 	reinit_completion(&mcp->wait_in_report);
 
 	ret = mcp_send_report(mcp, out_report, len);
@@ -713,6 +742,7 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 	case MCP2221_I2C_WR_NO_STOP:
 	case MCP2221_I2C_RD_DATA:
 	case MCP2221_I2C_RD_RPT_START:
+		hid_dbg(hdev, "r/w(%02x) <- %02x additional %02x\n", data[0], data[1], data[2]);
 		switch (data[1]) {
 		case MCP2221_SUCCESS:
 			mcp->status = 0;
@@ -724,6 +754,7 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 		break;
 
 	case MCP2221_I2C_PARAM_OR_STATUS:
+		hid_dbg(hdev, "s/p(%02x) <- %02x cancel %02x speed %02x state[8] %02x div[14] %02x to[15] %02x reqlen %u reqdone %u ptr %u ack %d SCL %u SDA %u pend %u addr %03x\n", data[0], data[1], data[2], data[3], data[8], data[14], data[15], data[9]|data[10]<<8, data[11]|data[12]<<8, data[13], !(data[20]&0x40), data[22], data[23], data[25], data[16]|data[17]<<8);
 		switch (data[1]) {
 		case MCP2221_SUCCESS:
 			if ((mcp->txbuf[3] == MCP2221_I2C_SET_SPEED) &&
@@ -749,6 +780,7 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 		break;
 
 	case MCP2221_I2C_GET_DATA:
+		hid_dbg(hdev, "get(%02x) <- %02x rsvd %02x nbytes %02x\n", data[0], data[1], data[2], data[3]);
 		switch (data[1]) {
 		case MCP2221_SUCCESS:
 			if (data[2] == MCP2221_I2C_ADDR_NACK) {
