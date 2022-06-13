@@ -256,6 +256,13 @@ static int mcp_i2c_write(struct mcp2221 *mcp,
 
 		if (last_status) {
 			ret = mcp_chk_last_cmd_status(mcp);
+			if (ret == -ENXIO) {
+				/*
+				 * Some devices signal being busy by NACK. After such a NACK,
+				 * a CANCEL will be needed to unblock the I2C engine.
+				 */
+				mcp_cancel_last_cmd(mcp);
+			}
 			if (ret)
 				return ret;
 		}
@@ -311,6 +318,19 @@ static int mcp_i2c_smbus_read(struct mcp2221 *mcp,
 	ret = mcp_send_data_req_status(mcp, mcp->txbuf, 4);
 	if (ret)
 		return ret;
+
+	usleep_range(980, 1000);
+
+	ret = mcp_chk_last_cmd_status(mcp);
+	hid_dbg(mcp->hdev, "status after start read: %d\n", ret);
+	if (ret == -ENXIO) {
+		/*
+		 * NACK requires CANCEL
+		 */
+		mcp_cancel_last_cmd(mcp);
+		return ret;
+	}
+	// other errors unclear, try to continue
 
 	mcp->rxbuf_idx = 0;
 
@@ -424,8 +444,15 @@ static int mcp_smbus_write(struct mcp2221 *mcp, u16 addr,
 		usleep_range(980, 1000);
 
 		ret = mcp_chk_last_cmd_status(mcp);
-		if (ret)
+		if (ret == -ENXIO) {
+			/*
+			 * After NACK, a CANCEL will be needed to unblock the I2C engine.
+			 */
+			mcp_cancel_last_cmd(mcp);
+		}
+		if (ret) {
 			return ret;
+		}
 	}
 
 	return ret;
@@ -762,8 +789,8 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 				mcp->status = -EAGAIN;
 				break;
 			}
-			if ((mcp->txbuf[2] == MCP2221_I2C_CANCEL) &&
-				(data[2] == MCP2221_I2C_ENG_CANCEL_IN_PROGRESS)) {
+			if (mcp->txbuf[2] == MCP2221_I2C_CANCEL &&
+				data[2] != MCP2221_I2C_ENG_IDLE) {
 				mcp->status = -EINPROGRESS;
 				break;
 			}
