@@ -972,9 +972,20 @@ static int mcp2221_probe(struct hid_device *hdev,
 	mcp->adapter.algo = &mcp_i2c_algo;
 	mcp->adapter.retries = 1;
 	mcp->adapter.dev.parent = &hdev->dev;
-	snprintf(mcp->adapter.name, sizeof(mcp->adapter.name),
-			"MCP2221 usb-i2c bridge on hidraw%d",
-			((struct hidraw *)hdev->hidraw)->minor);
+
+	if (hdev->hidraw != NULL)
+	{
+		// hdev->hidraw will only be populated if CONFIG_HIDRAW is enabled
+		// the driver itself seems to work without ?!?
+		snprintf(mcp->adapter.name, sizeof(mcp->adapter.name),
+				"MCP2221 usb-i2c bridge on hidraw%d",
+				((struct hidraw *)hdev->hidraw)->minor);
+	}
+	else
+	{
+		snprintf(mcp->adapter.name, sizeof(mcp->adapter.name),
+				"MCP2221 usb-i2c bridge, no hidraw support");
+	}
 
 	ret = i2c_add_adapter(&mcp->adapter);
 	if (ret) {
