@@ -46,6 +46,8 @@ enum {
 	MCP2221_I2C_MASK_ADDR_NACK = 0x40,
 	MCP2221_I2C_WRADDRL_SEND = 0x21,
 	MCP2221_I2C_ADDR_NACK = 0x25,
+	MCP2221_I2C_PARTIAL_DATA = 0x41,
+	MCP2221_I2C_READ_PARTIAL = 0x54,
 	MCP2221_I2C_READ_COMPL = 0x55,
 	MCP2221_ALT_F_NOT_GPIOV = 0xEE,
 	MCP2221_ALT_F_NOT_GPIOD = 0xEF,
@@ -232,6 +234,7 @@ static int mcp_i2c_write(struct mcp2221 *mcp,
 				struct i2c_msg *msg, int type, u8 last_status)
 {
 	int ret, len, idx, sent;
+	int waits_per_write;
 
 	idx = 0;
 	sent  = 0;
@@ -240,6 +243,7 @@ static int mcp_i2c_write(struct mcp2221 *mcp,
 	else
 		len = 60;
 
+	waits_per_write = 15;
 	do {
 		mcp->txbuf[0] = type;
 		mcp->txbuf[1] = msg->len & 0xff;
@@ -254,7 +258,8 @@ static int mcp_i2c_write(struct mcp2221 *mcp,
 
 		usleep_range(980, 1000);
 
-		if (last_status) {
+		while (waits_per_write)
+		{
 			ret = mcp_chk_last_cmd_status(mcp);
 			if (ret == -ENXIO) {
 				/*
@@ -263,9 +268,16 @@ static int mcp_i2c_write(struct mcp2221 *mcp,
 				 */
 				mcp_cancel_last_cmd(mcp);
 			}
+			if (ret == -EAGAIN) {
+				waits_per_write--;
+				continue;
+			}
 			if (ret)
 				return ret;
+			break;
 		}
+
+		waits_per_write = 15;
 
 		sent = sent + len;
 		if (sent >= msg->len)
@@ -299,6 +311,7 @@ static int mcp_i2c_smbus_read(struct mcp2221 *mcp,
 {
 	int ret;
 	u16 total_len;
+	int waits_per_get;
 
 	mcp->txbuf[0] = type;
 	if (msg) {
@@ -334,20 +347,43 @@ static int mcp_i2c_smbus_read(struct mcp2221 *mcp,
 
 	mcp->rxbuf_idx = 0;
 
+	/*
+	 * It is unlcear when exactly the MCP2221 will return a block of up to 60
+	 * bytes. At the slowest speed of 50kHz the transmission of 600bits takes
+	 * 12ms. 15 tries per GET should be on the safe side.
+	 */
+	waits_per_get = 15;
 	do {
 		memset(mcp->txbuf, 0, 4);
 		mcp->txbuf[0] = MCP2221_I2C_GET_DATA;
 
 		ret = mcp_send_data_req_status(mcp, mcp->txbuf, 1);
-		if (ret)
-			return ret;
+		if (ret == -EAGAIN)
+		{
+			usleep_range(980, 1000);
+			waits_per_get -= 1;
+			continue;
+		}
 
-		ret = mcp_chk_last_cmd_status(mcp);
 		if (ret)
 			return ret;
 
 		usleep_range(980, 1000);
-	} while (mcp->rxbuf_idx < total_len);
+
+		waits_per_get = 15;
+
+	} while (mcp->rxbuf_idx < total_len && waits_per_get > 0);
+
+	ret = mcp_chk_last_cmd_status(mcp);
+	if (ret)
+		return ret;
+
+	/*
+	 * Status looks OK, but above loop did not return the expected amount of
+	 * data.
+	 */
+	if (mcp->rxbuf_idx < total_len)
+		return ETIMEDOUT;
 
 	return ret;
 }
@@ -736,9 +772,11 @@ static int mcp_get_i2c_eng_state(struct mcp2221 *mcp,
 		ret = -ETIMEDOUT;
 		break;
 	case MCP2221_I2C_ENG_BUSY:
+	case MCP2221_I2C_PARTIAL_DATA:
 		ret = -EAGAIN;
 		break;
 	case MCP2221_SUCCESS:
+	case MCP2221_I2C_READ_COMPL:
 		ret = 0x00;
 		break;
 	default:
@@ -823,7 +861,7 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 				mcp->status = -EIO;
 				break;
 			}
-			if (data[2] == MCP2221_I2C_READ_COMPL) {
+			if (data[2] == MCP2221_I2C_READ_COMPL || data[2] == MCP2221_I2C_READ_PARTIAL) {
 				buf = mcp->rxbuf;
 				memcpy(&buf[mcp->rxbuf_idx], &data[4], data[3]);
 				mcp->rxbuf_idx = mcp->rxbuf_idx + data[3];
@@ -831,6 +869,9 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 				break;
 			}
 			mcp->status = -EIO;
+			break;
+		case MCP2221_I2C_PARTIAL_DATA:
+			mcp->status = -EAGAIN;
 			break;
 		default:
 			mcp->status = -EIO;
