@@ -18,6 +18,11 @@
 #include <linux/gpio/driver.h>
 #include "hid-ids.h"
 
+#ifndef GPIO_LINE_DIRECTION_IN
+#define GPIO_LINE_DIRECTION_IN  1
+#define GPIO_LINE_DIRECTION_OUT 0
+#endif
+
 /* Commands codes in a raw output report */
 enum {
 	MCP2221_I2C_WR_DATA = 0x90,
@@ -148,6 +153,7 @@ static int mcp_send_data_req_status(struct mcp2221 *mcp,
 			case MCP2221_I2C_WR_NO_STOP:
 			case MCP2221_I2C_RD_DATA:
 			case MCP2221_I2C_RD_RPT_START:
+			{
 				static char print_buf[64];
 				char *q = print_buf;
 				int i;
@@ -159,6 +165,7 @@ static int mcp_send_data_req_status(struct mcp2221 *mcp,
 				if (len >= 4)
 					hid_dbg(mcp->hdev, "r/w(%02x) -> addr %02x length %04x %s\n",
 							out_report[0], out_report[3], out_report[1] | out_report[2]<<8, print_buf);
+			}
 				break;
 			case MCP2221_I2C_PARAM_OR_STATUS:
 				if (len >= 5)
